@@ -7,32 +7,151 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from astropy.time import Time
 import datetime
 import time
-import threading
+from matplotlib import colors as mcolors
+import matplotlib.patheffects as patheffects
+import matplotlib as mpl
+
+plt.rcParams['font.family'] = 'Segoe UI'
 
 
 class StarPlot:
 
     def __init__(self, window, star_predictor, stars_data=[],
                  default_time=datetime.datetime.utcnow().isoformat(timespec='seconds')):
-        self.min_el = 20
-        self.stars_points = None
-        self.stars_predictions = []
+
+        # Color configuration
+        self.color_bg_hex = "#000885"
+        self.color_star_edge_hex = "#F39C12"  # Orange border
+        self.color_star_fill_hex = "#F4D03F"  # Warm yellow fill
+        self.color_star_selected_hex = "#E74C3C"  # Reddish for selected star
+        self.color_star_fill_rgba = np.array([0.957, 0.816, 0.247, 1.0])  # #F4D03F
+        self.color_star_selected_rgba = np.array([0.784, 0.133, 0.117, 1.0])  # ~#C9221E
+
+        # Init members.
+        self.min_el = 15
+        self.max_el = 85
         self.default_time = default_time
         self.star_predictor = star_predictor
         self.fig, self.ax = plt.subplots(subplot_kw={'projection': 'polar'})
         self.canvas = None
-        self.info_label = None  # Label to display star info in the GUI
-        self.time_entry = None  # Time input field
-        self.selected_element = None  # Keep track of the selected star's plot element
-        self.plot_frame = None  # Frame to hold the plot
-        self.observed_positions = []  # Track the observed positions (name, theta, r, datetime, catalog details)
-        self.auto_update_time = tk.BooleanVar(value=False)  # For enabling/disabling auto time update
-        self.auto_time_thread = None  # Thread for automatic time update
-        self.stop_auto_update = threading.Event()  # Event to stop auto-update
+        self.info_label = None
+        self.time_entry = None
+        self.selected_element = None
+        self.plot_frame = None
+        self.observed_positions = []
+        self.auto_update_time = tk.BooleanVar(value=False)
         self.init_plot(window)
         self.min_magnitude = 0
         self.max_magnitude = 0
+        self.stars_predictions = []
+        self.scatter = None
+        self.thetas = None
+        self.rs = None
+        self.visible_stars = []
+        self.visible_predictions = []
+        self.selected_index = None
+        self.selected_star = None
+        self.auto_update_job = None
+
+
+
+        # Update the stars.
         self.update_stars(stars_data)
+
+    def _configure_axes(self):
+
+        # Background color (full plot)
+        self.ax.set_facecolor(self.color_bg_hex)  # Dark blue
+
+        self.ax.set_theta_zero_location('N')
+        self.ax.set_theta_direction(-1)
+        self.ax.set_ylim(0, 80)
+        el_ticks_deg = [15, 25, 35, 45, 55, 65, 75, 85]
+        r_ticks = [90 - el for el in el_ticks_deg]
+        self.ax.set_yticks(r_ticks)
+        self.ax.set_rlabel_position(90)
+        self.ax.set_yticklabels([f"{el}°" for el in el_ticks_deg])
+        azi_ticks_deg = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
+        self.ax.set_xticks(np.deg2rad(azi_ticks_deg))
+        self.ax.set_xticklabels([f"{azi}" for azi in azi_ticks_deg])
+
+        azi_minor = np.arange(0, 360, 10)  # 0,10,20,...
+        self.ax.set_xticks(np.deg2rad(azi_minor), minor=True)
+        # Subgrid (menor): misma tonalidad, más tenue y discontinua
+        self.ax.grid(
+            which='minor',
+            color="#EAF4FF",
+            alpha=0.3,
+            linewidth=0.5,
+            linestyle='--'
+        )
+
+        # Shade zone between 10° and 15° elevation (r from 80 to 75)
+        theta = np.linspace(0, 2 * np.pi, 360)
+        r_min = 90 - 15  # 75
+        r_max = 90 - 10  # 80
+        self.ax.fill_between(theta, r_min, r_max, color='gray', alpha=0.3, zorder=0)
+
+        self.ax.grid(color="#EAF4FF", alpha=0.5, linewidth=1.1)  # Light bluish grid
+
+        # Remove automatic radial tick labels
+        self.ax.set_yticklabels([])
+        self.ax.set_yticklabels([], minor=True)
+
+        # Manual placement of elevation labels inside the plot
+        for el in el_ticks_deg:
+            r = 90 - el
+            theta_pos = np.deg2rad(90 + 1)  # Place at azimuth 90° (left side)
+            # Slightly move the text toward the center
+            r_text = r - 1   # Move inward (adjust if needed)
+
+            self.ax.text(
+                theta_pos,
+                r_text,
+                f"{el}",
+                ha='right',
+                va='top',
+                color="#EAF4FF",
+                alpha=0.7,
+                fontsize=7.5,
+                bbox=dict(
+                    boxstyle='round,pad=0.0',  # small rounded box
+                    facecolor=self.color_bg_hex,  # same as background
+                    edgecolor='none',
+                    alpha=1.0
+                ),
+                zorder=5
+            )
+
+        for label in self.ax.get_xticklabels():
+            label.set_fontsize(8.5)
+
+    def _apply_scatter_colors(self, selected_index: int | None):
+        """
+        Apply face colors & edges to scatter points:
+          - Normal stars: warm yellow + orange border.
+          - Selected star: reddish + bright border (thicker).
+        """
+        if self.scatter is None:
+            return
+
+        n = len(self.visible_stars)
+        if n == 0:
+            return
+
+        facecolors = np.tile(self.color_star_fill_rgba, (n, 1))
+        edgecolors = np.tile(np.array(mcolors.to_rgba(self.color_star_edge_hex)), (n, 1))
+        linewidths = np.full(n, 1.0)
+
+        # If something is selected, mark it more strongly
+        if selected_index is not None and 0 <= selected_index < n:
+            edgecolors[selected_index] = np.array(self.color_star_selected_rgba)
+            linewidths[selected_index] = 3
+
+        # Apply colors
+        self.scatter.set_facecolors(facecolors)
+        self.scatter.set_edgecolors(edgecolors)
+        self.scatter.set_linewidths(linewidths)
 
     def init_plot(self, window):
 
@@ -40,14 +159,8 @@ class StarPlot:
         self.plot_frame = tk.Frame(window)
         self.plot_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Set up the polar plot with azimuth and elevation limits
-        self.ax.set_theta_zero_location('N')
-        self.ax.set_theta_direction(-1)
-        self.ax.set_ylim(0, 90)
-        self.ax.set_yticks([13, 24, 35, 46, 57, 68, 79])
-        self.ax.set_yticklabels(['79', '68°', '57°', '46°', '35°', '24°', '13°'])
-        self.ax.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]))
-        self.ax.set_xticklabels(['0', '30°', '60°', '90°', '120°', '150°', '180°', '210°', '240°', '270°', '300°', '330°'])
+        # Initial axes configuration
+        self._configure_axes()
 
         # Add a label to display star info
         self.info_label = tk.Label(window, text="Click on a star to see details", font=("Arial", 12))
@@ -89,7 +202,7 @@ class StarPlot:
 
         # Set up the canvas and Tkinter event handling
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)  # Make canvas expand and fill the frame
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.mpl_connect('pick_event', self.on_pick)
 
         # Allow the window and the plot to resize
@@ -99,7 +212,7 @@ class StarPlot:
 
         filtered_stars = []
         for star in stars_data['stars']:
-            if float(star.get('Vmag', 99)) <= 5:
+            if float(star.get('Vmag', 99)) <= 7:
                 filtered_stars.append(star)
 
         self.stars_data = {'stars': filtered_stars}
@@ -120,7 +233,10 @@ class StarPlot:
             new_time = Time(new_time_str)
 
             # Generate new predictions for the stars based on the new time
+            t0 = time.perf_counter()
             new_predictions = self.star_predictor.predict(self.stars_data, [new_time])
+            t1 = time.perf_counter()
+            print(f"predict() took {1000 * (t1 - t0):.3f} ms")
 
             # Update the plot with the new predictions
             self.update_predictions(new_predictions)
@@ -131,93 +247,144 @@ class StarPlot:
 
     def update_predictions(self, new_predictions):
 
-        # Store the currently selected star's name (if a star is selected)
-        selected_star_name = self.selected_element[1]['name'] if self.selected_element else None
-
-        # Update the internal star predictions with the new data
+        # Preserve previously selected star by name
+        selected_star_name = self.selected_star['name'] if self.selected_star else None
         self.stars_predictions = new_predictions
 
-        # Clear the existing plot
-        self.ax.clear()
-        self.ax.set_theta_zero_location('N')
-        self.ax.set_theta_direction(-1)
-        self.ax.set_ylim(0, 90)
-        self.ax.set_yticks([13, 24, 35, 46, 57, 68, 79])
-        self.ax.set_yticklabels(['79', '68°', '57°', '46°', '35°', '24°', '13°'])
-        self.ax.set_xticks(np.deg2rad([0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]))
-        self.ax.set_xticklabels(['0', '30°', '60°', '90°', '120°', '150°', '180°', '210°', '240°', '270°', '300°', '330°'])
+        # Reset state structures for this update
+        self.visible_stars = []
+        self.visible_predictions = []
+        self.thetas = []
+        self.rs = []
+        self.selected_index = None
 
-        # Re-plot the stars with the new predictions
-        self.stars_points = []
-
-        # Re-plot all stars with black borders and sizes depending on magnitude
+        # Build arrays of visible stars
         for star_data in self.stars_predictions:
-
             predictions = star_data['predictions']
+            if len(predictions) != 1:
+                continue
 
-            if len(predictions) == 1:
-                # Single prediction: plot a point
-                azimuth = predictions[0]['azimuth']
-                elevation = predictions[0]['elevation']
+            azimuth = predictions[0]['azimuth']
+            elevation = predictions[0]['elevation']
 
-                if elevation > self.min_el:  # Only plot if the star is above the horizon
+            if elevation <= self.min_el or elevation >= self.max_el:
+                continue
 
-                    star = star_data['star']
-                    magnitude = star.get('Vmag', 1.0)
-                    size = int(100 - (magnitude - self.min_magnitude) * (
-                            95 / (self.max_magnitude - self.min_magnitude + 1e-5)))
-                    r = 90 - elevation  # Convert elevation to polar coordinates
-                    theta = np.deg2rad(azimuth)  # Convert azimuth to radians
+            star = star_data['star']
+            self.visible_stars.append(star)
+            self.visible_predictions.append(predictions[0])
+            self.thetas.append(np.deg2rad(azimuth))  # az -> radians
+            self.rs.append(90 - elevation)  # el -> polar radius
 
-                    # Plot using scatter for custom size and black edge color
-                    point = self.ax.scatter(theta, r, s=size, edgecolor='black', facecolor='blue', zorder=5, picker=6)
-                    self.stars_points.append((point, star, r, theta))  # Store point and star for interaction
+        # If there are no visible stars, remove scatter if it exists and exit
+        if not self.thetas:
+            if self.scatter is not None:
+                self.scatter.remove()
+                self.scatter = None
+            self.canvas.draw_idle()
+            return
 
-        # Re-plot observed positions
-        for (star_name, theta, r, _, _, _) in self.observed_positions:
-            self.ax.plot(theta, r, 'g*', markersize=12, zorder=10)  # Plot observed position with green asterisk
+        # Create or update the single scatter
+        thetas_arr = np.array(self.thetas)
+        rs_arr = np.array(self.rs)
 
-        # If a star was selected, find the updated position and keep it selected
+        sizes_arr = np.array([
+            int(4 * np.sqrt(max(0.1, self.max_magnitude - s.get('Vmag', 1.0))))
+            for s in self.visible_stars
+        ], dtype=float)
+
+        if self.scatter is None:
+            # Create unified scatter (first time)
+            self.scatter = self.ax.scatter(
+                thetas_arr,
+                rs_arr,
+                s=sizes_arr,
+                linewidths=1,
+                zorder=5,
+                picker=6
+            )
+        else:
+            # Update existing scatter
+            offsets = np.column_stack([thetas_arr, rs_arr])
+            self.scatter.set_offsets(offsets)
+            self.scatter.set_sizes(sizes_arr)
+
+        # Restore selected star if present
+        restored_index = None
         if selected_star_name:
-            for plot_element, star, r, theta in self.stars_points:
+            for idx, star in enumerate(self.visible_stars):
                 if star['name'] == selected_star_name:
-                    # Update the selected element to reflect the new position
-                    self.selected_element = (plot_element, star, r, theta)
-                    plot_element.set_facecolor('red')  # Keep the selected star red
-                    azimuth = np.rad2deg(theta)
-                    elevation = 90 - r
-                    # Update the star information label
+                    self.selected_index = idx
+                    self.selected_star = star
+                    restored_index = idx
+
+                    pred = self.visible_predictions[idx]
+                    azimuth = pred['azimuth']
+                    elevation = pred['elevation']
                     self.info_label.config(
-                        text=f"Name: {star['name']} | Catalog: {star['catalog_name']} | Number: {star['catalog_num']} | Magnitude: {round(star['Vmag'],4)}"
+                        text=f"Name: {star['name']} | Catalog: {star['catalog_name']} | Number: {star['catalog_num']} | Magnitude: {round(star['Vmag'], 4)}"
                              f"\nAz: {azimuth:.4f}° | El: {elevation:.4f}°"
                     )
+                    break
 
-        # Redraw the canvas to reflect the new data
+        self._apply_scatter_colors(restored_index)
+
+        # Re-plot observed positions (will add markers on top of scatter)
+        for (star_name, theta, r, _, _, _) in self.observed_positions:
+            self.ax.plot(theta, r, 'g*', markersize=12, zorder=10)
+
         self.canvas.draw_idle()
 
     def close_plot(self):
-
-        # Stop the auto-update thread before closing
-        self.stop_auto_update.set()
-
-        # Ensure any thread completes before closing the window
-        if self.auto_time_thread:
-            self.auto_time_thread.join()
+        """Cleanly stop auto-update and close the plot."""
+        if self.auto_update_job is not None:
+            self.plot_frame.after_cancel(self.auto_update_job)
+            self.auto_update_job = None
 
     def mark_as_observed(self):
         """Mark the currently selected star's position as observed."""
-        if self.selected_element:
-            plot_element, star, r, theta = self.selected_element
-            if r is not None and theta is not None:
-                # Add the observed position to the list, along with the current datetime and catalog info
-                observed_datetime = datetime.datetime.now(datetime.UTC).isoformat(timespec='milliseconds')
-                catalog_name = star.get('catalog_name', 'Unknown')
-                catalog_num = star.get('catalog_num', 'Unknown')
+        if self.selected_index is None or self.selected_star is None:
+            self.info_label.config(text="No star selected to mark as observed.")
+            return
 
-                self.observed_positions.append((star['name'], theta, r, observed_datetime, catalog_name, catalog_num))
+        idx = self.selected_index
+        star = self.selected_star
 
-                # Redraw the plot with the observed marker
-                self.update_predictions(self.stars_predictions)
+        if self.thetas is None or self.rs is None:
+            self.info_label.config(text="Internal error: no positions available for selected star.")
+            return
+
+        if idx < 0 or idx >= len(self.thetas) or idx >= len(self.rs):
+            self.info_label.config(text="Internal error: invalid selected index.")
+            return
+
+        theta = self.thetas[idx]
+        r = self.rs[idx]
+
+        if theta is None or r is None:
+            self.info_label.config(text="Selected star has no valid position to mark as observed.")
+            return
+
+        observed_datetime = datetime.datetime.now(datetime.UTC).isoformat(timespec='milliseconds')
+        catalog_name = star.get('catalog_name', 'Unknown')
+        catalog_num = star.get('catalog_num', 'Unknown')
+
+        self.observed_positions.append(
+            (star['name'], theta, r, observed_datetime, catalog_name, catalog_num)
+        )
+
+        # Draw only the new observed marker
+        self.ax.plot(
+            theta, r,
+            marker='X',  # Better symbol
+            markersize=10,  # Larger size
+            markerfacecolor='#32CD32',
+            markeredgecolor='red',
+            markeredgewidth=1.5,
+            zorder=12
+        )
+
+        self.canvas.draw_idle()
 
     def save_observed_positions(self):
         """Save the observed positions to a CSV file."""
@@ -258,102 +425,114 @@ class StarPlot:
         self.info_label.config(text=f"Observed positions loaded from {filename}")
 
     def toggle_auto_time(self):
-
+        """Enable or disable automatic time updates using Tk's event loop."""
         if self.auto_update_time.get():
-            self.stop_auto_update.clear()
-            self.auto_time_thread = threading.Thread(target=self.auto_update_time_loop)
-            self.auto_time_thread.start()
+            if self.auto_update_job is None:
+                self.auto_update_time_step()
         else:
-            self.stop_auto_update.set()
+            if self.auto_update_job is not None:
+                self.plot_frame.after_cancel(self.auto_update_job)
+                self.auto_update_job = None
 
-    def auto_update_time_loop(self):
+    def auto_update_time_step(self):
+        """
+        Single auto-update step.
 
-        last_plot_update = time.time()  # Track the last time the plot was updated
+        This function:
+          - Updates the time entry with current UTC time.
+          - Updates the info label for the selected star (if any).
+          - Optionally refreshes the full plot at a slower cadence.
+          - Reschedules itself using Tk's 'after' if auto-update is still enabled.
+        """
 
-        while not self.stop_auto_update.is_set():
+        # If auto-update was turned off meanwhile, do nothing
+        if not self.auto_update_time.get():
+            self.auto_update_job = None
+            return
 
-            current_time = time.time()
+        # 1) Update current UTC time in the entry
+        current_utc_time = datetime.datetime.utcnow().isoformat(timespec='seconds')
+        self.time_entry.delete(0, tk.END)
+        self.time_entry.insert(0, current_utc_time)
 
-            # Update the current UTC time in the time entry
-            current_utc_time = datetime.datetime.utcnow().isoformat(timespec='seconds')
-            self.time_entry.delete(0, tk.END)
-            self.time_entry.insert(0, current_utc_time)
+        # 2) Update selected star label (only label, not full plot)
+        if self.selected_star is not None:
+            star = self.selected_star
+            new_time = Time(current_utc_time)
 
-            # Update the selected star's position and label every 0.5 seconds
-            if self.selected_element:
-                plot_element, star, r, theta = self.selected_element
-                new_time = Time(current_utc_time)  # Use the current time for prediction
+            # Compute new az/el for the currently selected star
+            star_coordinates = self.star_predictor.ra_dec_to_sky_coord_j2000(
+                star['ra_h'], star['ra_m'], star['ra_s'],
+                star['dec_d'], star['dec_m'], star['dec_s']
+            )
+            azimuth, elevation = self.star_predictor.calculate_az_el(star_coordinates, new_time)
 
-                # Predict the new azimuth and elevation for the selected star
-                star_coordinates = self.star_predictor.ra_dec_to_sky_coord_j2000(
-                    star['ra_h'], star['ra_m'], star['ra_s'], star['dec_d'], star['dec_m'], star['dec_s']
-                )
-                azimuth, elevation = self.star_predictor.calculate_az_el(star_coordinates, new_time)
+            magnitude = round(star['Vmag'], 4)
+            catalog_name = star['catalog_name']
+            catalog_num = star['catalog_num']
 
-                # Update the star's position (theta, r) based on new predictions
-                theta = np.deg2rad(azimuth)
-                r = 90 - elevation
+            self.info_label.config(
+                text=f"Name: {star['name']} | Catalog: {catalog_name} | Number: {catalog_num} | Magnitude: {magnitude}"
+                     f"\nAz: {azimuth:.4f}° | El: {elevation:.4f}°"
+            )
 
-                # Update the label to show the current azimuth, elevation, and other info
-                magnitude = round(star['Vmag'], 4)
-                catalog_name = star['catalog_name']
-                catalog_num = star['catalog_num']
+        # 3) Optionally refresh the entire plot every N steps (optional)
+        #    For example, refresh every 2 minutes.
+        #    You can count calls using an attribute counter if needed.
+        #    For now, you can keep manual refresh with the "Update Time" button
+        #    or call self.update_time() less frequently from here if you want.
 
-                # Update the star information label with the new predicted values
-                self.info_label.config(
-                    text=f"Name: {star['name']} | Catalog: {catalog_name} | Number: {catalog_num} | Magnitude: {magnitude}"
-                         f"\nAz: {azimuth:.4f}° | El: {elevation:.4f}°")
-
-            # Update the entire plot every 10 seconds
-            if current_time - last_plot_update >= 120:
-                self.update_time()  # Refresh the entire plot
-                current_utc_time = datetime.datetime.utcnow().isoformat(timespec='seconds')
-                last_plot_update = current_time  # Reset the last plot update time
-
-            time.sleep(10)  # Sleep for 0.5 seconds before the next loop iteration
+        # 4) Reschedule next auto-update (e.g. every 10 seconds)
+        #    Adjust interval_ms as needed (1000 = 1 second, 10000 = 10 seconds)
+        interval_ms = 1000
+        self.auto_update_job = self.plot_frame.after(interval_ms, self.auto_update_time_step)
 
     # Event handler for clicking on stars
     def on_pick(self, event):
 
-        # Restore the color of the previously selected element
-        if self.selected_element:
-            self.selected_element[0].set_facecolor('blue')  # Reset the color to blue for previous selection
+        # If there is no scatter, there is nothing to pick
+        if self.scatter is None:
+            return
 
-        # Find the star that was clicked on
-        for plot_element, star, r, theta in self.stars_points:
+        # Ensure the event comes from our scatter
+        if event.artist is not self.scatter:
+            return
 
-            if event.artist == plot_element:
-                star_name = star['name']
-                catalog_num = star['catalog_num']
-                catalog_name = star['catalog_name']
-                magnitude = round(star['Vmag'], 4)
+        # Indices of the picked points (can be multiple)
+        inds = event.ind
+        if not len(inds):
+            return
 
-                # Check if only one prediction exists for this star
-                for star_data in self.stars_predictions:
-                    if star_data['star']['name'] == star_name:
-                        predictions = star_data['predictions']
+        # Use the first picked index
+        idx = int(inds[0])
 
-                        if len(predictions) == 1:
-                            # Extract azimuth and elevation from the single prediction
-                            azimuth = predictions[0]['azimuth']
-                            elevation = predictions[0]['elevation']
-                            self.info_label.config(
-                                text=f"Name: {star_name} | Catalog: {catalog_name} | Number: {catalog_num} | Magnitude: {magnitude}"
-                                     f"\nAz: {azimuth:.4f}° | El: {elevation:.4f}°"
-                            )
-                        else:
-                            # If more than one prediction, show just the star information
-                            self.info_label.config(
-                                text=f"Name: {star_name} | Name: {catalog_name} | Number: {catalog_num}\nAz: - | El: -"
-                            )
+        # Safety check for index range
+        if idx < 0 or idx >= len(self.visible_stars):
+            return
 
-                # Change the color of the clicked element to red
-                plot_element.set_facecolor('red')  # Set the color to red for new selection
+        # Get star and prediction for this index
+        star = self.visible_stars[idx]
+        pred = self.visible_predictions[idx]
 
-                # Keep track of the selected element
-                self.selected_element = (plot_element, star, r, theta)
+        # Update info label
+        star_name = star['name']
+        cat_name = star['catalog_name']
+        cat_num = star['catalog_num']
+        mag = round(star['Vmag'], 4)
+        azimuth = pred['azimuth']
+        elevation = pred['elevation']
 
-                # Redraw the canvas to show the updated plot
-                self.canvas.draw()
+        self.info_label.config(
+            text=f"Name: {star_name} | Catalog: {cat_name} | Number: {cat_num} | Magnitude: {mag}"
+                 f"\nAz: {azimuth:.4f}° | El: {elevation:.4f}°"
+        )
 
-                break
+        # Store current selection
+        self.selected_index = idx
+        self.selected_star = star
+
+        # Apply colors: base + selected
+        self._apply_scatter_colors(idx)
+
+        # Non-blocking redraw
+        self.canvas.draw_idle()
