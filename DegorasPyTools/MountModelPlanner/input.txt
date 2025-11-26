@@ -1,0 +1,55 @@
+# Añadir en este fichero en cada linea nombre de la estrella  o fk5id
+# Si hay estrellas repetidas se van a omitir
+# Usar # para comentarios
+Polaris
+Sirius
+Canopus
+Arcturus
+Alpha Centauri
+Vega
+Capella
+Rigel
+Procyon
+Betelgeuse
+Aldebaran
+Antares
+Spica
+Pollux
+Fomalhaut
+Deneb
+Altair
+Regulus
+Castor
+Bellatrix
+Mirfak
+Shaula
+Sadr
+Menkalinan
+Zubenelgenubi
+Kochab
+Dubhe
+Aldebaran
+Caph
+Mirzam
+Alphecca
+Alnitak A
+Alnilam
+Mintaka
+Kappa Cygni
+Rasalhague
+Ras alpethi
+Achernar
+Acrux
+Algol
+Merak
+Pherkad
+Furud
+Chi Draconis
+Botein
+Iota Aquilae
+Mizar
+Alnair
+Nihal
+Gacrux
+beta Cas
+#30 Psc

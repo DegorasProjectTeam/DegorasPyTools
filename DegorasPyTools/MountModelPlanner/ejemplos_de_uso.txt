@@ -1,0 +1,14 @@
+
+Se genera el fichero stars_param.json
+
+1.- Ejemplo usando todas las estrellas que hay en el fichero input.txt: 
+
+	python stars_params.py
+
+2.- Ejemplo usando la estrella especificada (indicando su nombre): 
+
+	python stars_params.py Mirzam
+
+3.- Ejemplo usando la estrella especificada (indcando su fk5 id): 
+
+	python stars_params.py 777
