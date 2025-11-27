@@ -4,6 +4,7 @@
 *todo*/
 *install*/
 *deploy*/
+*__pycache__*/
 
 # Logs
 *.log
@@ -12,6 +13,7 @@
 *.TMP
 *.tmp
 *.autosave
+*.pyc
 
 # Python
 *.idea

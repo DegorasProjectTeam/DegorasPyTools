@@ -52,8 +52,8 @@ class StarPlot:
         self.selected_index = None
         self.selected_star = None
         self.auto_update_job = None
-
-
+        self._auto_update_counter = 0
+        self._auto_update_first = True
 
         # Update the stars.
         self.update_stars(stars_data)
@@ -476,6 +476,8 @@ class StarPlot:
         """Enable or disable automatic time updates using Tk's event loop."""
         if self.auto_update_time.get():
             if self.auto_update_job is None:
+                self._auto_update_counter = 0
+                self._auto_update_first = True
                 self.auto_update_time_step()
         else:
             if self.auto_update_job is not None:
@@ -489,7 +491,7 @@ class StarPlot:
         This function:
           - Updates the time entry with current UTC time.
           - Updates the info label for the selected star (if any).
-          - Optionally refreshes the full plot at a slower cadence.
+          - Refreshes the full plot every 10 seconds (and also on first call).
           - Reschedules itself using Tk's 'after' if auto-update is still enabled.
         """
 
@@ -524,15 +526,21 @@ class StarPlot:
                      f"\nAz: {azimuth:.4f}° | El: {elevation:.4f}°"
             )
 
-        # 3) Optionally refresh the entire plot every N steps (optional)
-        #    For example, refresh every 2 minutes.
-        #    You can count calls using an attribute counter if needed.
-        #    For now, you can keep manual refresh with the "Update Time" button
-        #    or call self.update_time() less frequently from here if you want.
+        # 3) Full plot refresh:
+        #    - Always on first call.
+        #    - Then every 10 cycles (10 seconds if interval_ms = 1000).
+        if self._auto_update_first:
+            self._auto_update_first = False
+            self._auto_update_counter = 0
+            self.update_time()
+        else:
+            self._auto_update_counter += 1
+            if self._auto_update_counter >= 20:
+                self._auto_update_counter = 0
+                self.update_time()
 
-        # 4) Reschedule next auto-update (e.g. every 10 seconds)
-        #    Adjust interval_ms as needed (1000 = 1 second, 10000 = 10 seconds)
-        interval_ms = 1000
+        # 4) Reschedule next auto-update (e.g. every 1 second)
+        interval_ms = 500
         self.auto_update_job = self.plot_frame.after(interval_ms, self.auto_update_time_step)
 
     # Event handler for clicking on stars
