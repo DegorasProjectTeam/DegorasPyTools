@@ -59,25 +59,52 @@ class StarPlot:
         self.update_stars(stars_data)
 
     def _configure_axes(self):
+        """Configure polar axes (background, grid, azimuth & elevation ticks/labels)."""
 
-        # Background color (full plot)
-        self.ax.set_facecolor(self.color_bg_hex)  # Dark blue
-
+        # --- Base polar config & background ---
+        self.ax.set_facecolor(self.color_bg_hex)
         self.ax.set_theta_zero_location('N')
         self.ax.set_theta_direction(-1)
         self.ax.set_ylim(0, 80)
-        el_ticks_deg = [15, 25, 35, 45, 55, 65, 75, 85]
-        r_ticks = [90 - el for el in el_ticks_deg]
-        self.ax.set_yticks(r_ticks)
-        self.ax.set_rlabel_position(90)
-        self.ax.set_yticklabels([f"{el}°" for el in el_ticks_deg])
-        azi_ticks_deg = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
-        self.ax.set_xticks(np.deg2rad(azi_ticks_deg))
-        self.ax.set_xticklabels([f"{azi}" for azi in azi_ticks_deg])
 
-        azi_minor = np.arange(0, 360, 10)  # 0,10,20,...
-        self.ax.set_xticks(np.deg2rad(azi_minor), minor=True)
-        # Subgrid (menor): misma tonalidad, más tenue y discontinua
+        # --- Elevation (El) major/minor ticks ---
+        # Major elevation rings
+        el_major_deg = [15, 25, 35, 45, 55, 65, 75, 85]
+        r_major = np.array([90 - el for el in el_major_deg], dtype=float)
+
+        # Minor elevation rings: one division between each pair of major rings
+        el_minor_deg = 0.5 * (np.array(el_major_deg[:-1]) + np.array(el_major_deg[1:]))
+        r_minor = np.array([90 - el for el in el_minor_deg], dtype=float)
+
+        # Set major/minor radial ticks (no labels here, los pondremos a mano)
+        self.ax.set_yticks(r_major)
+        self.ax.set_yticks(r_minor, minor=True)
+
+        # --- Azimuth (Az) major/minor ticks ---
+        azi_major_deg = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
+        azi_minor_deg = np.arange(0, 360, 10)  # 0,10,20,...,350
+
+        self.ax.set_xticks(np.deg2rad(azi_major_deg))
+        self.ax.set_xticklabels([f"{azi}" for azi in azi_major_deg])
+
+        self.ax.set_xticks(np.deg2rad(azi_minor_deg), minor=True)
+
+        # --- Shaded zone between 10° and 15° elevation (r from 80 to 75) ---
+        theta = np.linspace(0, 2 * np.pi, 360)
+        r_min = 90 - 15  # 75
+        r_max = 90 - 10  # 80
+        self.ax.fill_between(theta, r_min, r_max, color='gray', alpha=0.3, zorder=0)
+
+        # --- Grid: major + minor (same style for Az and El) ---
+        # Major grid: stronger
+        self.ax.grid(
+            which='major',
+            color="#EAF4FF",
+            alpha=0.5,
+            linewidth=1.1
+        )
+
+        # Minor grid: lighter & dashed
         self.ax.grid(
             which='minor',
             color="#EAF4FF",
@@ -86,24 +113,16 @@ class StarPlot:
             linestyle='--'
         )
 
-        # Shade zone between 10° and 15° elevation (r from 80 to 75)
-        theta = np.linspace(0, 2 * np.pi, 360)
-        r_min = 90 - 15  # 75
-        r_max = 90 - 10  # 80
-        self.ax.fill_between(theta, r_min, r_max, color='gray', alpha=0.3, zorder=0)
-
-        self.ax.grid(color="#EAF4FF", alpha=0.5, linewidth=1.1)  # Light bluish grid
-
-        # Remove automatic radial tick labels
+        # --- Custom elevation labels (inside plot, near Az = 90°) ---
+        # Remove automatic radial labels (major & minor)
         self.ax.set_yticklabels([])
         self.ax.set_yticklabels([], minor=True)
 
-        # Manual placement of elevation labels inside the plot
-        for el in el_ticks_deg:
-            r = 90 - el
-            theta_pos = np.deg2rad(90 + 1)  # Place at azimuth 90° (left side)
-            # Slightly move the text toward the center
-            r_text = r - 1   # Move inward (adjust if needed)
+        theta_pos = np.deg2rad(90 + 1)  # Slight offset from pure 90° for readability
+
+        for el, r in zip(el_major_deg, r_major):
+            # Small radial offset inward so they do not sit exactly on the grid circle
+            r_text = r - 1
 
             self.ax.text(
                 theta_pos,
@@ -115,7 +134,7 @@ class StarPlot:
                 alpha=0.7,
                 fontsize=7.5,
                 bbox=dict(
-                    boxstyle='round,pad=0.0',  # small rounded box
+                    boxstyle='round,pad=0.0',
                     facecolor=self.color_bg_hex,  # same as background
                     edgecolor='none',
                     alpha=1.0
@@ -123,8 +142,11 @@ class StarPlot:
                 zorder=5
             )
 
+        # --- Azimuth labels styling ---
         for label in self.ax.get_xticklabels():
             label.set_fontsize(8.5)
+            label.set_color("#EAF4FF")
+            label.set_fontweight('normal')
 
     def _apply_scatter_colors(self, selected_index: int | None):
         """
@@ -155,64 +177,56 @@ class StarPlot:
 
     def init_plot(self, window):
 
-        # Create a frame to hold the plot and allow it to resize
         self.plot_frame = tk.Frame(window)
         self.plot_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Initial axes configuration
         self._configure_axes()
 
-        # Add a label to display star info
+        # Minimiza márgenes dentro de la figura
+        self.fig.tight_layout(pad=0.2)
+        self.fig.subplots_adjust(top=0.97, bottom=0.05, left=0.03, right=0.97)
+
+        # Label info
         self.info_label = tk.Label(window, text="Click on a star to see details", font=("Arial", 12))
-        self.info_label.pack(pady=10)
-        self.info_label.config(text=f"Name: - | Catalog: - | Number: - | Magnitude: - \nAz: - | El: -")
+        self.info_label.pack(pady=3)
 
-        # Create a frame to align the time entry and update button horizontally
         time_frame = tk.Frame(window)
-        time_frame.pack(pady=10)
+        time_frame.pack(pady=3)
 
-        # Add an entry for time input inside the time frame
         self.time_entry = tk.Entry(time_frame)
         self.time_entry.pack(side=tk.LEFT)
-        self.time_entry.insert(0, self.default_time)  # Default time format
+        self.time_entry.insert(0, self.default_time)
 
-        # Add a button to update the time inside the time frame
         update_button = tk.Button(time_frame, text="Update Time", command=self.update_time)
         update_button.pack(side=tk.LEFT, padx=5)
 
-        # Add a checkbox to enable real-time updates
-        auto_update_checkbox = tk.Checkbutton(time_frame, text="Auto-Update Time (UTC)", variable=self.auto_update_time, command=self.toggle_auto_time)
+        auto_update_checkbox = tk.Checkbutton(time_frame, text="Auto-Update Time (UTC)",
+                                              variable=self.auto_update_time, command=self.toggle_auto_time)
         auto_update_checkbox.pack(side=tk.LEFT, padx=5)
 
-        # Create another frame for aligning the buttons horizontally
         button_frame = tk.Frame(window)
-        button_frame.pack(pady=10)
+        button_frame.pack(pady=2)
 
-        # Add a button to mark the current star as observed inside button frame
         mark_button = tk.Button(button_frame, text="Mark position as observed", command=self.mark_as_observed)
         mark_button.pack(side=tk.LEFT, padx=5)
 
-        # Add a button to save observed positions to a CSV file inside button frame
         save_button = tk.Button(button_frame, text="Save Observed Positions", command=self.save_observed_positions)
         save_button.pack(side=tk.LEFT, padx=5)
 
-        # Add a button to load observed positions from a CSV file inside button frame
         load_button = tk.Button(button_frame, text="Load Observed Positions", command=self.load_observed_positions)
         load_button.pack(side=tk.LEFT, padx=5)
 
-        # Set up the canvas and Tkinter event handling
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.mpl_connect('pick_event', self.on_pick)
 
-        # Allow the window and the plot to resize
-        self.plot_frame.pack_propagate(False)  # Prevent the frame from shrinking
+        self.plot_frame.pack_propagate(False)
 
     def update_stars(self, stars_data):
 
         filtered_stars = []
         for star in stars_data['stars']:
-            if float(star.get('Vmag', 99)) <= 7:
+            if float(star.get('Vmag', 99)) <= 8:
                 filtered_stars.append(star)
 
         self.stars_data = {'stars': filtered_stars}
@@ -244,6 +258,33 @@ class StarPlot:
         except ValueError:
             # If the time input is invalid, show an error in the info label
             self.info_label.config(text="Invalid time format. Use YYYY-MM-DDTHH:MM:SS")
+
+    def _mag_to_size(self, mag: float) -> float:
+        """
+        Map visual magnitude to marker size (scatter 's' parameter).
+
+        Brighter stars (lower/negative mag) get larger sizes.
+        Fainter stars get smaller but still visible markers.
+        """
+
+        if mag <= 0.0:
+            return 50.0   # very bright stars (Sirius-like)
+        elif mag <= 1.0:
+            return 40.0
+        elif mag <= 2.0:
+            return 30.0
+        elif mag <= 3.0:
+            return 20.0
+        elif mag <= 4.0:
+            return 15.0
+        elif mag <= 5.0:
+            return 10.0
+        elif mag <= 6.0:
+            return 5.0
+        elif mag <= 7.0:
+            return 5.0
+        else:
+            return 9.0    # faintest stars you are plotting
 
     def update_predictions(self, new_predictions):
 
@@ -288,8 +329,15 @@ class StarPlot:
         thetas_arr = np.array(self.thetas)
         rs_arr = np.array(self.rs)
 
+        '''
         sizes_arr = np.array([
             int(4 * np.sqrt(max(0.1, self.max_magnitude - s.get('Vmag', 1.0))))
+            for s in self.visible_stars
+        ], dtype=float)
+        '''
+
+        sizes_arr = np.array([
+            self._mag_to_size(s.get('Vmag', 1.0))
             for s in self.visible_stars
         ], dtype=float)
 
